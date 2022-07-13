@@ -9,6 +9,18 @@ and this project adheres to
 ### Added
 
 - cosmwasm-std: Add `Uint{64,128,256,512}::one`.
+- cosmwasm-std: Add `Uint{64,128,256,512}::abs_diff` and
+  `Decimal{,256}::abs_diff` ([#1334]).
+- cosmwasm-std: Implement `From<Decimal> for Decimal256`.
+- cosmwasm-std: Implement `Rem`/`RemAssign` for `Decimal`/`Decimal256`.
+- cosmwasm-std: Implement `checked_add`/`_sub`/`_div`/`_rem` for
+  `Decimal`/`Decimal256`.
+- cosmwasm-std: Implement `pow`/`saturating_pow` for `Decimal`/`Decimal256`.
+- cosmwasm-std: Implement `ceil`/`floor` for `Decimal`/`Decimal256`.
+- cosmwasm-std: Implement `saturating_add`/`sub`/`mul` for
+  `Decimal`/`Decimal256`.
+
+[#1334]: https://github.com/CosmWasm/cosmwasm/pull/1334
 
 ## [1.0.0] - 2022-05-14
 
