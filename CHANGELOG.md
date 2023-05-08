@@ -6,6 +6,125 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [1.2.3] - 2023-03-22
+
+- cosmwasm-vm: Use saturating increments for `Stats` fields to ensure we don't
+  run into overflow issues.
+
+## [1.2.2] - 2023-03-08
+
+### Added
+
+- cosmwasm-std: Add an IBC querier implementation to `testing::MockQuerier`
+  ([#1620], [#1624]).
+- cosmwasm-std: Add `#[must_use]` annotations to `Timestamp` math functions.
+
+[#1620]: https://github.com/CosmWasm/cosmwasm/pull/1620
+[#1624]: https://github.com/CosmWasm/cosmwasm/pull/1624
+
+### Fixed
+
+- all: Fix `backtraces` feature for newer versions of Rust. This still requires
+  Rust nightly ([#1613]).
+- cosmwasm-std: Add missing export `CheckedMultiplyFractionError` ([#1608]).
+
+[#1608]: https://github.com/CosmWasm/cosmwasm/pull/1608
+[#1613]: https://github.com/CosmWasm/cosmwasm/pull/1613
+
+## [1.2.1] - 2023-01-30
+
+### Added
+
+- cosmwasm-std: Add `Decimal{,256}::to_uint_floor` and `::to_uint_ceil` for
+  efficient and explicit decimal to uint conversion ([#1603]).
+
+[#1603]: https://github.com/CosmWasm/cosmwasm/pull/1603
+
+### Fixed
+
+- cosmwasm-std: Make fields of `WeightedVoteOption` public to allow constructing
+  it ([#1597]).
+
+[#1597]: https://github.com/CosmWasm/cosmwasm/issues/1597
+
+### Changed
+
+- cosmwasm-std: Improve readability of `Debug` output for `Decimal` and
+  `Decimal256` ([#1600]).
+
+[#1600]: https://github.com/CosmWasm/cosmwasm/pull/1600
+
+## [1.2.0] - 2023-01-24
+
+### Added
+
+- cosmwasm-std: Add `GovMsg::VoteWeighted`. In order to use this in a contract,
+  the `cosmwasm_1_2` feature needs to be enabled for the `cosmwasm_std`
+  dependency. This makes the contract incompatible with chains running versions
+  of CosmWasm earlier than 1.2.0 ([#1481]).
+- cosmwasm-std: Add `instantiate2_address` which allows calculating the
+  predictable addresses for `MsgInstantiateContract2` ([#1437], [#1554]).
+- cosmwasm-std: Add `WasmMsg::Instantiate2` (requires `cosmwasm_1_2`, see
+  `GovMsg::VoteWeighted` above) to instantiate contracts at a predictable
+  address ([#1436], [#1554])).
+- cosmwasm-schema: In contracts, `cosmwasm schema` will now output a separate
+  JSON Schema file for each entrypoint in the `raw` subdirectory ([#1478],
+  [#1533]).
+- cosmwasm-std: Upgrade `serde-json-wasm` dependency to 0.5.0 which adds map
+  support to `to_vec`/`to_binary` and friends.
+- cosmwasm-std: Implement `AsRef<[u8]>` for `Binary` and `HexBinary` ([#1550]).
+- cosmwasm-std: Allow constructing `SupplyResponse` via a `Default`
+  implementation ([#1552], [#1560]).
+- cosmwasm-std: Add `Never` type which cannot be instantiated. This can be used
+  as the error type for `ibc_packet_receive` or `ibc_packet_ack` to gain
+  confidence that the implementations never errors and the transaction does not
+  get reverted. ([#1513])
+- cosmwasm-std: Add new `WasmQuery::CodeInfo` to get the checksum of a code ID
+  ([#1561]).
+- cosmwasm-vm: Add `Cache::remove_wasm` to remove obsolete Wasm blobs and their
+  compiled modules.
+- cosmwasm-std: Implement fraction multiplication and division. Assists with
+  Uint & Decimal arithmetic and exposes methods for flooring/ceiling result
+  ([#1485], [#1566]).
+
+[#1436]: https://github.com/CosmWasm/cosmwasm/issues/1436
+[#1437]: https://github.com/CosmWasm/cosmwasm/issues/1437
+[#1478]: https://github.com/CosmWasm/cosmwasm/pull/1478
+[#1481]: https://github.com/CosmWasm/cosmwasm/pull/1481
+[#1485]: https://github.com/CosmWasm/cosmwasm/issues/1485
+[#1513]: https://github.com/CosmWasm/cosmwasm/pull/1513
+[#1533]: https://github.com/CosmWasm/cosmwasm/pull/1533
+[#1550]: https://github.com/CosmWasm/cosmwasm/issues/1550
+[#1552]: https://github.com/CosmWasm/cosmwasm/pull/1552
+[#1554]: https://github.com/CosmWasm/cosmwasm/pull/1554
+[#1560]: https://github.com/CosmWasm/cosmwasm/pull/1560
+[#1561]: https://github.com/CosmWasm/cosmwasm/pull/1561
+[#1566]: https://github.com/CosmWasm/cosmwasm/pull/1566
+
+### Changed
+
+- cosmwasm-vm: Avoid exposing OS specific file system errors in order to test
+  cosmwasm-vm on Windows. This gives us confidence for integrating cosmwasm-vm
+  in a libwasmvm build on Windows. This change is likely to be consensus
+  breaking as error messages change. ([#1406])
+- cosmwasm-vm: Use `Display` representation for embedding Wasmer
+  `InstantiationError`s ([#1508]).
+
+[#1406]: https://github.com/CosmWasm/cosmwasm/pull/1406
+[#1508]: https://github.com/CosmWasm/cosmwasm/issues/1508
+
+### Fixed
+
+- cosmwasm-schema: Nested QueryMsg with generics is now supported by the
+  QueryResponses macro ([#1516]).
+- cosmwasm-schema: A nested QueryMsg no longer causes runtime errors if it
+  contains doc comments.
+- cosmwasm-std/cosmwasm-vm: Increase length limit for address conversion in
+  `MockApi` to support addresses longer than 54 bytes ([#1529]).
+
+[#1516]: https://github.com/CosmWasm/cosmwasm/issues/1516
+[#1529]: https://github.com/CosmWasm/cosmwasm/issues/1529
+
 ## [1.1.9] - 2022-12-06
 
 ### Fixed
@@ -1539,7 +1658,11 @@ Some main points:
 
 All future Changelog entries will reference this base
 
-[unreleased]: https://github.com/CosmWasm/cosmwasm/compare/v1.1.9...HEAD
+[unreleased]: https://github.com/CosmWasm/cosmwasm/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/CosmWasm/cosmwasm/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/CosmWasm/cosmwasm/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/CosmWasm/cosmwasm/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/CosmWasm/cosmwasm/compare/v1.1.9...v1.2.0
 [1.1.9]: https://github.com/CosmWasm/cosmwasm/compare/v1.1.8...v1.1.9
 [1.1.8]: https://github.com/CosmWasm/cosmwasm/compare/v1.1.6...v1.1.8
 [1.1.6]: https://github.com/CosmWasm/cosmwasm/compare/v1.1.5...v1.1.6

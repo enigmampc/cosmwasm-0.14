@@ -7,6 +7,7 @@ use crate::Empty;
 
 mod bank;
 mod ibc;
+mod query_response;
 mod staking;
 mod wasm;
 
@@ -20,6 +21,8 @@ pub use staking::{
     AllDelegationsResponse, AllValidatorsResponse, BondedDenomResponse, Delegation,
     DelegationResponse, FullDelegation, StakingQuery, Validator, ValidatorResponse,
 };
+#[cfg(feature = "cosmwasm_1_2")]
+pub use wasm::CodeInfoResponse;
 pub use wasm::{ContractInfoResponse, WasmQuery};
 
 #[non_exhaustive]

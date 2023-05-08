@@ -35,6 +35,10 @@ use crate::timestamp::Timestamp;
 use crate::traits::{Api, Querier, QuerierResult};
 use crate::types::{BlockInfo, ContractInfo, Env, MessageInfo, TransactionInfo};
 use crate::Attribute;
+#[cfg(feature = "stargate")]
+use crate::{ChannelResponse, IbcQuery, ListChannelsResponse, PortIdResponse};
+
+use super::riffle_shuffle;
 
 pub const MOCK_CONTRACT_ADDR: &str = "cosmos2contract";
 
@@ -77,12 +81,17 @@ pub fn mock_dependencies_with_balances(
 // We can later make simplifications here if needed
 pub type MockStorage = MemoryStorage;
 
-/// Length of canonical addresses created with this API. Contracts should not make any assumtions
+/// Length of canonical addresses created with this API. Contracts should not make any assumptions
 /// what this value is.
+///
+/// The mock API can only canonicalize and humanize addresses up to this length. So it must be
+/// long enough to store common bech32 addresses.
+///
 /// The value here must be restorable with `SHUFFLES_ENCODE` + `SHUFFLES_DECODE` in-shuffles.
-const CANONICAL_LENGTH: usize = 54;
+/// See <https://oeis.org/A002326/list> for a table of those values.
+const CANONICAL_LENGTH: usize = 90; // n = 45
 
-const SHUFFLES_ENCODE: usize = 18;
+const SHUFFLES_ENCODE: usize = 10;
 const SHUFFLES_DECODE: usize = 2;
 
 // MockPrecompiles zero pads all human addresses to make them fit the canonical_length
@@ -90,7 +99,7 @@ const SHUFFLES_DECODE: usize = 2;
 // not really smart, but allows us to see a difference (and consistent length for canonical adddresses)
 #[derive(Copy, Clone)]
 pub struct MockApi {
-    /// Length of canonical addresses created with this API. Contracts should not make any assumtions
+    /// Length of canonical addresses created with this API. Contracts should not make any assumptions
     /// what this value is.
     canonical_length: usize,
 }
@@ -118,14 +127,16 @@ impl Api for MockApi {
 
     fn addr_canonicalize(&self, input: &str) -> StdResult<CanonicalAddr> {
         // Dummy input validation. This is more sophisticated for formats like bech32, where format and checksum are validated.
-        if input.len() < 3 {
+        let min_length = 3;
+        let max_length = self.canonical_length;
+        if input.len() < min_length {
             return Err(StdError::generic_err(
-                "Invalid input: human address too short",
+                format!("Invalid input: human address too short for this mock implementation (must be >= {min_length})."),
             ));
         }
-        if input.len() > self.canonical_length {
+        if input.len() > max_length {
             return Err(StdError::generic_err(
-                "Invalid input: human address too long",
+                format!("Invalid input: human address too long for this mock implementation (must be <= {max_length})."),
             ));
         }
 
@@ -449,6 +460,8 @@ pub struct MockQuerier<C: DeserializeOwned = Empty> {
     #[cfg(feature = "staking")]
     staking: StakingQuerier,
     wasm: WasmQuerier,
+    #[cfg(feature = "stargate")]
+    ibc: IbcQuerier,
     /// A handler to handle custom queries. This is set to a dummy handler that
     /// always errors by default. Update it via `with_custom_handler`.
     ///
@@ -463,6 +476,8 @@ impl<C: DeserializeOwned> MockQuerier<C> {
             #[cfg(feature = "staking")]
             staking: StakingQuerier::default(),
             wasm: WasmQuerier::default(),
+            #[cfg(feature = "stargate")]
+            ibc: IbcQuerier::default(),
             // strange argument notation suggested as a workaround here: https://github.com/rust-lang/rust/issues/41078#issuecomment-294296365
             custom_handler: Box::from(|_: &_| -> MockQuerierCustomHandlerResult {
                 SystemResult::Err(SystemError::UnsupportedRequest {
@@ -489,6 +504,11 @@ impl<C: DeserializeOwned> MockQuerier<C> {
         delegations: &[crate::query::FullDelegation],
     ) {
         self.staking = StakingQuerier::new(denom, validators, delegations);
+    }
+
+    #[cfg(feature = "stargate")]
+    pub fn update_ibc(&mut self, port_id: &str, channels: &[IbcChannel]) {
+        self.ibc = IbcQuerier::new(port_id, channels);
     }
 
     pub fn update_wasm<WH: 'static>(&mut self, handler: WH)
@@ -541,9 +561,7 @@ impl<C: CustomQuery + DeserializeOwned> MockQuerier<C> {
                 kind: "Stargate".to_string(),
             }),
             #[cfg(feature = "stargate")]
-            QueryRequest::Ibc(_) => SystemResult::Err(SystemError::UnsupportedRequest {
-                kind: "Ibc".to_string(),
-            }),
+            QueryRequest::Ibc(msg) => self.ibc.query(msg),
         }
     }
 }
@@ -576,18 +594,25 @@ impl WasmQuerier {
 impl Default for WasmQuerier {
     fn default() -> Self {
         let handler = Box::from(|request: &WasmQuery| -> QuerierResult {
-            let addr = match request {
-                WasmQuery::Smart { contract_addr, .. } => contract_addr,
-                WasmQuery::ContractInfo { contract_addr, .. } => contract_addr,
+            let err = match request {
+                WasmQuery::Smart { contract_addr, .. } => SystemError::NoSuchContract {
+                    addr: contract_addr.clone(),
+                },
+                WasmQuery::ContractInfo { contract_addr, .. } => SystemError::NoSuchContract {
+                    addr: contract_addr.clone(),
+                },
                 WasmQuery::Raw { .. } => {
-                    return SystemResult::Err(SystemError::InvalidRequest {
+                    SystemError::InvalidRequest {
                         error: "raw queries are unsupported".to_string(),
                         request: Default::default(),
-                    })
+                    }
+                },
+                #[cfg(feature = "cosmwasm_1_2")]
+                WasmQuery::CodeInfo { code_id, .. } => {
+                    SystemError::NoSuchCode { code_id: *code_id }
                 }
-            }
-            .clone();
-            SystemResult::Err(SystemError::NoSuchContract { addr })
+            };
+            SystemResult::Err(err)
         });
         Self::new(handler)
     }
@@ -685,6 +710,70 @@ impl BankQuerier {
     }
 }
 
+#[cfg(feature = "stargate")]
+#[derive(Clone, Default)]
+pub struct IbcQuerier {
+    port_id: String,
+    channels: Vec<IbcChannel>,
+}
+
+#[cfg(feature = "stargate")]
+impl IbcQuerier {
+    /// Create a mock querier where:
+    /// - port_id is the port the "contract" is bound to
+    /// - channels are a list of ibc channels
+    pub fn new(port_id: &str, channels: &[IbcChannel]) -> Self {
+        IbcQuerier {
+            port_id: port_id.to_string(),
+            channels: channels.to_vec(),
+        }
+    }
+
+    pub fn query(&self, request: &IbcQuery) -> QuerierResult {
+        let contract_result: ContractResult<Binary> = match request {
+            IbcQuery::Channel {
+                channel_id,
+                port_id,
+            } => {
+                let channel = self
+                    .channels
+                    .iter()
+                    .find(|c| match port_id {
+                        Some(p) => c.endpoint.channel_id.eq(channel_id) && c.endpoint.port_id.eq(p),
+                        None => {
+                            c.endpoint.channel_id.eq(channel_id)
+                                && c.endpoint.port_id == self.port_id
+                        }
+                    })
+                    .cloned();
+                let res = ChannelResponse { channel };
+                to_binary(&res).into()
+            }
+            IbcQuery::ListChannels { port_id } => {
+                let channels = self
+                    .channels
+                    .iter()
+                    .filter(|c| match port_id {
+                        Some(p) => c.endpoint.port_id.eq(p),
+                        None => c.endpoint.port_id == self.port_id,
+                    })
+                    .cloned()
+                    .collect();
+                let res = ListChannelsResponse { channels };
+                to_binary(&res).into()
+            }
+            IbcQuery::PortId {} => {
+                let res = PortIdResponse {
+                    port_id: self.port_id.clone(),
+                };
+                to_binary(&res).into()
+            }
+        };
+        // system result is always ok in the mock implementation
+        SystemResult::Ok(contract_result)
+    }
+}
+
 #[cfg(feature = "staking")]
 #[derive(Clone, Default)]
 pub struct StakingQuerier {
@@ -754,68 +843,6 @@ impl StakingQuerier {
         // system result is always ok in the mock implementation
         SystemResult::Ok(contract_result)
     }
-}
-
-/// Performs a perfect shuffle (in shuffle)
-///
-/// https://en.wikipedia.org/wiki/Riffle_shuffle_permutation#Perfect_shuffles
-/// https://en.wikipedia.org/wiki/In_shuffle
-///
-/// The number of shuffles required to restore the original order are listed in
-/// https://oeis.org/A002326, e.g.:
-///
-/// ```ignore
-/// 2: 2
-/// 4: 4
-/// 6: 3
-/// 8: 6
-/// 10: 10
-/// 12: 12
-/// 14: 4
-/// 16: 8
-/// 18: 18
-/// 20: 6
-/// 22: 11
-/// 24: 20
-/// 26: 18
-/// 28: 28
-/// 30: 5
-/// 32: 10
-/// 34: 12
-/// 36: 36
-/// 38: 12
-/// 40: 20
-/// 42: 14
-/// 44: 12
-/// 46: 23
-/// 48: 21
-/// 50: 8
-/// 52: 52
-/// 54: 20
-/// 56: 18
-/// 58: 58
-/// 60: 60
-/// 62: 6
-/// 64: 12
-/// 66: 66
-/// 68: 22
-/// 70: 35
-/// 72: 9
-/// 74: 20
-/// ```
-pub fn riffle_shuffle<T: Clone>(input: &[T]) -> Vec<T> {
-    assert!(
-        input.len() % 2 == 0,
-        "Method only defined for even number of elements"
-    );
-    let mid = input.len() / 2;
-    let (left, right) = input.split_at(mid);
-    let mut out = Vec::<T>::with_capacity(input.len());
-    for i in 0..mid {
-        out.push(right[i].clone());
-        out.push(left[i].clone());
-    }
-    out
 }
 
 pub fn digit_sum(input: &[u8]) -> usize {
@@ -908,23 +935,34 @@ mod tests {
         let canonical = api.addr_canonicalize(&original).unwrap();
         let recovered = api.addr_humanize(&canonical).unwrap();
         assert_eq!(recovered, "cosmwasmchef");
+
+        // Long input (Juno contract address)
+        let original =
+            String::from("juno1v82su97skv6ucfqvuvswe0t5fph7pfsrtraxf0x33d8ylj5qnrysdvkc95");
+        let canonical = api.addr_canonicalize(&original).unwrap();
+        let recovered = api.addr_humanize(&canonical).unwrap();
+        assert_eq!(recovered, original);
     }
 
     #[test]
-    #[should_panic(expected = "address too short")]
     fn addr_canonicalize_min_input_length() {
         let api = MockApi::default();
         let human = String::from("1");
-        let _ = api.addr_canonicalize(&human).unwrap();
+        let err = api.addr_canonicalize(&human).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("human address too short for this mock implementation (must be >= 3)"));
     }
 
     #[test]
-    #[should_panic(expected = "address too long")]
     fn addr_canonicalize_max_input_length() {
         let api = MockApi::default();
         let human =
-            String::from("some-extremely-long-address-not-supported-by-this-api-longer-than-54");
-        let _ = api.addr_canonicalize(&human).unwrap();
+            String::from("some-extremely-long-address-not-supported-by-this-api-longer-than-supported------------------------");
+        let err = api.addr_canonicalize(&human).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("human address too long for this mock implementation (must be <= 90)"));
     }
 
     #[test]
@@ -1251,6 +1289,118 @@ mod tests {
         assert_eq!(res.amount, coin(0, "ELF"));
     }
 
+    #[cfg(feature = "stargate")]
+    #[test]
+    fn ibc_querier_channel_existing() {
+        let chan1 = mock_ibc_channel("channel-0", IbcOrder::Ordered, "ibc");
+        let chan2 = mock_ibc_channel("channel-1", IbcOrder::Ordered, "ibc");
+
+        let ibc = IbcQuerier::new("myport", &[chan1.clone(), chan2]);
+
+        // query existing
+        let query = &IbcQuery::Channel {
+            channel_id: "channel-0".to_string(),
+            port_id: Some("my_port".to_string()),
+        };
+        let raw = ibc.query(query).unwrap().unwrap();
+        let chan: ChannelResponse = from_binary(&raw).unwrap();
+        assert_eq!(chan.channel, Some(chan1));
+    }
+
+    #[cfg(feature = "stargate")]
+    #[test]
+    fn ibc_querier_channel_existing_no_port() {
+        let chan1 = IbcChannel {
+            endpoint: IbcEndpoint {
+                port_id: "myport".to_string(),
+                channel_id: "channel-0".to_string(),
+            },
+            counterparty_endpoint: IbcEndpoint {
+                port_id: "their_port".to_string(),
+                channel_id: "channel-7".to_string(),
+            },
+            order: IbcOrder::Ordered,
+            version: "ibc".to_string(),
+            connection_id: "connection-2".to_string(),
+        };
+        let chan2 = mock_ibc_channel("channel-1", IbcOrder::Ordered, "ibc");
+
+        let ibc = IbcQuerier::new("myport", &[chan1.clone(), chan2]);
+
+        // query existing
+        let query = &IbcQuery::Channel {
+            channel_id: "channel-0".to_string(),
+            port_id: Some("myport".to_string()),
+        };
+        let raw = ibc.query(query).unwrap().unwrap();
+        let chan: ChannelResponse = from_binary(&raw).unwrap();
+        assert_eq!(chan.channel, Some(chan1));
+    }
+
+    #[cfg(feature = "stargate")]
+    #[test]
+    fn ibc_querier_channel_none() {
+        let chan1 = mock_ibc_channel("channel-0", IbcOrder::Ordered, "ibc");
+        let chan2 = mock_ibc_channel("channel-1", IbcOrder::Ordered, "ibc");
+
+        let ibc = IbcQuerier::new("myport", &[chan1, chan2]);
+
+        // query non-existing
+        let query = &IbcQuery::Channel {
+            channel_id: "channel-0".to_string(),
+            port_id: None,
+        };
+        let raw = ibc.query(query).unwrap().unwrap();
+        let chan: ChannelResponse = from_binary(&raw).unwrap();
+        assert_eq!(chan.channel, None);
+    }
+
+    #[cfg(feature = "stargate")]
+    #[test]
+    fn ibc_querier_channels_matching() {
+        let chan1 = mock_ibc_channel("channel-0", IbcOrder::Ordered, "ibc");
+        let chan2 = mock_ibc_channel("channel-1", IbcOrder::Ordered, "ibc");
+
+        let ibc = IbcQuerier::new("myport", &[chan1.clone(), chan2.clone()]);
+
+        // query channels matching "my_port" (should match both above)
+        let query = &IbcQuery::ListChannels {
+            port_id: Some("my_port".to_string()),
+        };
+        let raw = ibc.query(query).unwrap().unwrap();
+        let res: ListChannelsResponse = from_binary(&raw).unwrap();
+        assert_eq!(res.channels, vec![chan1, chan2]);
+    }
+
+    #[cfg(feature = "stargate")]
+    #[test]
+    fn ibc_querier_channels_no_matching() {
+        let chan1 = mock_ibc_channel("channel-0", IbcOrder::Ordered, "ibc");
+        let chan2 = mock_ibc_channel("channel-1", IbcOrder::Ordered, "ibc");
+
+        let ibc = IbcQuerier::new("myport", &[chan1, chan2]);
+
+        // query channels matching "myport" (should be none)
+        let query = &IbcQuery::ListChannels { port_id: None };
+        let raw = ibc.query(query).unwrap().unwrap();
+        let res: ListChannelsResponse = from_binary(&raw).unwrap();
+        assert_eq!(res.channels, vec![]);
+    }
+
+    #[cfg(feature = "stargate")]
+    #[test]
+    fn ibc_querier_port() {
+        let chan1 = mock_ibc_channel("channel-0", IbcOrder::Ordered, "ibc");
+
+        let ibc = IbcQuerier::new("myport", &[chan1]);
+
+        // query channels matching "myport" (should be none)
+        let query = &IbcQuery::PortId {};
+        let raw = ibc.query(query).unwrap().unwrap();
+        let res: PortIdResponse = from_binary(&raw).unwrap();
+        assert_eq!(res.port_id, "myport");
+    }
+
     #[cfg(feature = "staking")]
     #[test]
     fn staking_querier_all_validators() {
@@ -1453,7 +1603,7 @@ mod tests {
         let any_addr = "foo".to_string();
         let any_code_hash = "goo".to_string();
 
-        // Query WasmQuery::Smart
+        // By default, querier errors for WasmQuery::Smart
         let system_err = querier
             .query(&WasmQuery::Smart {
                 contract_addr: any_addr.clone(),
@@ -1466,7 +1616,7 @@ mod tests {
             err => panic!("Unexpected error: {:?}", err),
         }
 
-        // Query WasmQuery::ContractInfo
+        // By default, querier errors for WasmQuery::ContractInfo
         let system_err = querier
             .query(&WasmQuery::ContractInfo {
                 contract_addr: any_addr.clone(),
@@ -1475,6 +1625,18 @@ mod tests {
         match system_err {
             SystemError::NoSuchContract { addr } => assert_eq!(addr, any_addr),
             err => panic!("Unexpected error: {:?}", err),
+        }
+
+        #[cfg(feature = "cosmwasm_1_2")]
+        {
+            // By default, querier errors for WasmQuery::CodeInfo
+            let system_err = querier
+                .query(&WasmQuery::CodeInfo { code_id: 4 })
+                .unwrap_err();
+            match system_err {
+                SystemError::NoSuchCode { code_id } => assert_eq!(code_id, 4),
+                err => panic!("Unexpected error: {:?}", err),
+            }
         }
 
         querier.update_handler(|request| {
@@ -1517,7 +1679,25 @@ mod tests {
                             addr: contract_addr.clone(),
                         })
                     }
-                }
+                },
+                #[cfg(feature = "cosmwasm_1_2")]
+                WasmQuery::CodeInfo { code_id } => {
+                    use crate::{CodeInfoResponse, HexBinary};
+                    let code_id = *code_id;
+                    if code_id == 4 {
+                        let response = CodeInfoResponse {
+                            code_id,
+                            creator: "lalala".into(),
+                            checksum: HexBinary::from_hex(
+                                "84cf20810fd429caf58898c3210fcb71759a27becddae08dbde8668ea2f4725d",
+                            )
+                                .unwrap(),
+                        };
+                        SystemResult::Ok(ContractResult::Ok(to_binary(&response).unwrap()))
+                    } else {
+                        SystemResult::Err(SystemError::NoSuchCode { code_id })
+                    }
+                },
                 _ => {
                     panic!("Raw queries are unsupported")
                 }
@@ -1560,38 +1740,19 @@ mod tests {
             ),
             res => panic!("Unexpected result: {:?}", res),
         }
-    }
 
-    #[test]
-    fn riffle_shuffle_works() {
-        // Example from https://en.wikipedia.org/wiki/In_shuffle
-        let start = [0xA, 0x2, 0x3, 0x4, 0x5, 0x6];
-        let round1 = riffle_shuffle(&start);
-        assert_eq!(round1, [0x4, 0xA, 0x5, 0x2, 0x6, 0x3]);
-        let round2 = riffle_shuffle(&round1);
-        assert_eq!(round2, [0x2, 0x4, 0x6, 0xA, 0x3, 0x5]);
-        let round3 = riffle_shuffle(&round2);
-        assert_eq!(round3, start);
-
-        // For 14 elements, the original order is restored after 4 executions
-        // See https://en.wikipedia.org/wiki/In_shuffle#Mathematics and https://oeis.org/A002326
-        let original = [12, 33, 76, 576, 0, 44, 1, 14, 78, 99, 871212, -7, 2, -1];
-        let mut result = Vec::from(original);
-        for _ in 0..4 {
-            result = riffle_shuffle(&result);
+        // WasmQuery::ContractInfo
+        #[cfg(feature = "cosmwasm_1_2")]
+        {
+            let result = querier.query(&WasmQuery::CodeInfo { code_id: 4 });
+            match result {
+                SystemResult::Ok(ContractResult::Ok(value)) => assert_eq!(
+                    value,
+                    br#"{"code_id":4,"creator":"lalala","checksum":"84cf20810fd429caf58898c3210fcb71759a27becddae08dbde8668ea2f4725d"}"#
+                ),
+                res => panic!("Unexpected result: {:?}", res),
+            }
         }
-        assert_eq!(result, original);
-
-        // For 24 elements, the original order is restored after 20 executions
-        let original = [
-            7, 4, 2, 4656, 23, 45, 23, 1, 12, 76, 576, 0, 12, 1, 14, 78, 99, 12, 1212, 444, 31,
-            111, 424, 34,
-        ];
-        let mut result = Vec::from(original);
-        for _ in 0..20 {
-            result = riffle_shuffle(&result);
-        }
-        assert_eq!(result, original);
     }
 
     #[test]

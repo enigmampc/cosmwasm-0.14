@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MigrateMsg",
+  "type": "object",
+  "required": [
+    "payout"
+  ],
+  "properties": {
+    "payout": {
+      "description": "The address we send all remaining balance to",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

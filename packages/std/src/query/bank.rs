@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Coin;
 
+use super::query_response::QueryResponseType;
+
 #[non_exhaustive]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -22,7 +24,7 @@ pub enum BankQuery {
 }
 
 #[cfg(feature = "cosmwasm_1_1")]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub struct SupplyResponse {
@@ -31,7 +33,10 @@ pub struct SupplyResponse {
     pub amount: Coin,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[cfg(feature = "cosmwasm_1_1")]
+impl QueryResponseType for SupplyResponse {}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct BalanceResponse {
     /// Always returns a Coin with the requested denom.
@@ -39,9 +44,13 @@ pub struct BalanceResponse {
     pub amount: Coin,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+impl QueryResponseType for BalanceResponse {}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AllBalanceResponse {
     /// Returns all non-zero coins held by this account.
     pub amount: Vec<Coin>,
 }
+
+impl QueryResponseType for AllBalanceResponse {}

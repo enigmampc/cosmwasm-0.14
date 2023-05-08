@@ -16,6 +16,7 @@ mod import_helpers;
 #[cfg(feature = "iterator")]
 mod iterator;
 mod math;
+mod never;
 mod panic;
 mod query;
 mod results;
@@ -26,14 +27,14 @@ mod timestamp;
 mod traits;
 mod types;
 
-pub use crate::addresses::{Addr, CanonicalAddr};
+pub use crate::addresses::{instantiate2_address, Addr, CanonicalAddr, Instantiate2AddressError};
 pub use crate::binary::Binary;
 pub use crate::coin::{coin, coins, has_coins, Coin};
 pub use crate::deps::{Deps, DepsMut, OwnedDeps};
 pub use crate::errors::{
-    CheckedFromRatioError, CheckedMultiplyRatioError, ConversionOverflowError, DivideByZeroError,
-    OverflowError, OverflowOperation, RecoverPubkeyError, StdError, StdResult, SystemError,
-    VerificationError,
+    CheckedFromRatioError, CheckedMultiplyFractionError, CheckedMultiplyRatioError,
+    ConversionOverflowError, DivideByZeroError, OverflowError, OverflowOperation,
+    RecoverPubkeyError, StdError, StdResult, SystemError, VerificationError,
 };
 pub use crate::hex_binary::HexBinary;
 #[cfg(feature = "stargate")]
@@ -49,6 +50,9 @@ pub use crate::math::{
     Decimal, Decimal256, Decimal256RangeExceeded, DecimalRangeExceeded, Fraction, Isqrt, Uint128,
     Uint256, Uint512, Uint64,
 };
+pub use crate::never::Never;
+#[cfg(feature = "cosmwasm_1_2")]
+pub use crate::query::CodeInfoResponse;
 #[cfg(feature = "cosmwasm_1_1")]
 pub use crate::query::SupplyResponse;
 pub use crate::query::{
@@ -64,6 +68,8 @@ pub use crate::query::{
 pub use crate::query::{ChannelResponse, IbcQuery, ListChannelsResponse, PortIdResponse};
 #[allow(deprecated)]
 pub use crate::results::SubMsgExecutionResponse;
+#[cfg(all(feature = "stargate", feature = "cosmwasm_1_2"))]
+pub use crate::results::WeightedVoteOption;
 pub use crate::results::{
     attr, attr_plaintext, wasm_execute, wasm_instantiate, Attribute, BankMsg, ContractResult,
     CosmosMsg, CustomMsg, Empty, Event, QueryResponse, Reply, ReplyOn, Response, SubMsg,
